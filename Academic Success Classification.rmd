@@ -1,0 +1,609 @@
+---
+title: "Classification with an Academic Success Dataset"
+output: html_document
+---
+
+# 1. Business Understanding
+
+Source: This dataset will come from the Kaggle [Classification with an Academic Success Dataset](https://www.kaggle.com/competitions/playground-series-s4e6/overview) competition.
+
+Goal: The goal of this competition is to predict academic risk of students in higher education.
+
+Evaluation: Submissions are evaluated using the accuracy score.
+
+Data: There are two datasets, a train and test. The train is present to be able train a model, while the test is to be predicted on with said model and then the predictions will be used for the submission of the competition.
+
+- A comprehensive explanation of every column can be found at [UC Irvine Machine Learning Repository - Predict Students' Dropout and Academic Success](https://archive.ics.uci.edu/dataset/697/predict+students+dropout+and+academic+success)
+
+# 2. Data Understanding
+
+Import Libraries
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(janitor)
+library(reactable)
+library(cowplot)
+library(grid)
+library(reshape2)
+
+options(warn = -1) # Turn off warnings
+```
+
+Import Data
+
+```{r}
+# Train Dataset
+train = 
+  read.csv("train.csv") %>% 
+  clean_names() %>%
+  select(-id)
+
+# Test Dataset
+test = 
+  read.csv("test.csv") %>%
+  clean_names()
+```
+
+
+Describe Data
+
+```{r}
+# Function to get top 1 value and its frequency percentage
+top_1_value <- function(x) {
+  tbl <- sort(table(x, useNA = "ifany"), decreasing = TRUE)  # Count occurrences & sort
+  top_value <- names(tbl)[1]  # Get the most frequent value
+  top_count <- tbl[top_value]  # Get the count of the top value
+  top_percentage <- round((top_count / length(x)), 4)  # Calculate percentage of rows
+  return(list(top_value = top_value, top_percentage = top_percentage))
+}
+
+# Create df_summary with new column for Top Value % of Rows
+df_summary <- data.frame(
+  Column_Name = names(train), 
+  Data_Type = sapply(train, class),
+  Num_Unique_Values = sapply(train, n_distinct), 
+  Unique_Percentage = round(sapply(train, function(x) (n_distinct(x) / nrow(train))), 4),
+  Top_1_Value = sapply(train, function(x) top_1_value(x)$top_value),
+  Top_Value_Percentage = sapply(train, function(x) top_1_value(x)$top_percentage),
+  row.names = NULL
+)
+
+# Render the summary table with reactable
+reactable(
+  df_summary,
+  striped = TRUE,
+  columns = list(
+    Column_Name = colDef(width = 275, 
+                         name = "Column",
+                         headerStyle = list(background = "#CCCCCC")),
+    Data_Type = colDef(width = 100, 
+                       name = "Data Type",
+                       headerStyle = list(background = "#CCCCCC")),
+    Num_Unique_Values = colDef(width = 100, 
+                               name = "Unique Values", 
+                               format = colFormat(separators = TRUE),
+                               headerStyle = list(background = "#CCCCCC")),
+    Unique_Percentage = colDef(width = 120, 
+                               name = "% of Unique to Total", 
+                               format = colFormat(percent = TRUE, digits = 2),
+                               headerStyle = list(background = "#CCCCCC")),
+    Top_1_Value = colDef(name = "Top Value",
+                         headerStyle = list(background = "#CCCCCC")),
+    Top_Value_Percentage = colDef(name = "Top Value % of Rows",
+                                  format = colFormat(percent = TRUE, digits = 1),
+                                  headerStyle = list(background = "#CCCCCC"))
+  )
+)
+
+```
+
+Exploratory Data Analysis
+
+```{r fig.height=4, fig.width=12}
+# Count target variable and compute percentages
+target_counts <- train %>%
+  count(target) %>%
+  mutate(percentage = n / sum(n))  # Calculate percentages
+
+# Create bar graph
+bar_plot <- ggplot(target_counts, aes(x = reorder(factor(target), -n), y = n, fill = factor(target))) +
+  geom_bar(stat = "identity") +  
+  geom_text(aes(label = scales::comma(n)), vjust = -0.5, size = 6) +  
+  labs(title = "Counts of Target", x = "Target", y = "Number of Rows", fill = "Target") +
+  theme_minimal() +  
+  theme(
+    title = element_text(size = 16),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 14, color = "black", face = "plain"),
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.text.y = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "none"
+  ) +
+  ylim(0,40000) +
+  scale_fill_brewer(palette = "Set2")
+
+# Create pie chart with percentage labels and remove legend
+pie_chart <- ggplot(target_counts, aes(x = "", y = n, fill = factor(target))) +
+  geom_bar(stat = "identity", width = 1, color = "black") +
+  coord_polar(theta = "y") +  
+  geom_text(aes(label = paste0(round(percentage * 100, 1), "%")), 
+            position = position_stack(vjust = 0.5), size = 6, color = "black") +
+  labs(title = "% Distribution of Target") +
+  theme_void() +  
+  theme(
+    title = element_text(size = 16),
+    legend.position = "none"  # Remove legend
+  ) +
+  scale_fill_brewer(palette = "Set2")
+
+# Combine plots side by side using cowplot
+combined_plot <- plot_grid(bar_plot, pie_chart, ncol = 2, rel_widths = c(1, 1))
+
+# Display the combined plot
+print(combined_plot)
+```
+
+```{r fig.width=12, fig.height=40}
+# Identify numeric columns in each dataset
+train_numeric <- names(train)[sapply(train, is.numeric)]
+test_numeric <- names(test)[sapply(test, is.numeric)]
+
+# Find common numeric columns
+common_columns <- intersect(train_numeric, test_numeric)
+
+# Shape and Merge datasets
+train_long <- 
+  train %>%
+  select(all_of(common_columns)) %>%
+  mutate(dataset = "train")
+
+test_long <- 
+  test %>%
+  select(all_of(common_columns)) %>%
+  mutate(dataset = "test")
+
+# Combine train and test datasets
+combined_data <- 
+  bind_rows(train_long, test_long) %>%
+  pivot_longer(cols = -dataset, names_to = "variable", values_to = "value")
+
+# Plot histograms with facets
+ggplot(combined_data, aes(x = value)) +
+  geom_histogram(data = subset(combined_data, dataset == "train"),
+                 aes(fill = dataset), bins = 30, alpha = 0.5, color = "black") +
+  geom_histogram(data = subset(combined_data, dataset == "test"),
+                 aes(fill = dataset), bins = 30, alpha = 0.5, color = "black") +
+  scale_fill_manual(values = c("train" = "blue", "test" = "red")) +
+  facet_wrap(~variable, scales = "free", ncol = 2) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 14, face = "bold"),
+        axis.title = element_blank()) +
+  labs(fill = "Dataset")
+```
+
+
+```{r fig.width=12, fig.height=160}
+# Loop through each numeric column in the train dataset
+numeric_columns <- names(train)[sapply(train, is.numeric)]
+
+# Initialize an empty list to store the plots
+plot_list <- list()
+
+for (col in numeric_columns) {
+  
+  # Create a binned version of the numeric column
+  train2 <- train %>%
+    mutate(grade_bin = cut(train[[col]], breaks = 10, include.lowest = TRUE))
+  
+  # First plot: 100% stacked bar chart for each numeric column
+  train2_summary1 <- train2 %>%
+    group_by(grade_bin, target) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    group_by(grade_bin) %>%
+    mutate(percentage = round(count / sum(count), 3))
+  
+  plot1 <- ggplot(train2_summary1, aes(x = grade_bin, y = percentage, fill = target)) +
+    geom_bar(stat = "identity", position = "stack", color = "black", width = 0.94) +
+    geom_text(aes(label = scales::percent(percentage)), 
+              position = position_stack(vjust = 0.5), 
+              color = "black", size = 3) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_fill_brewer(palette = "Set2") +
+    theme_minimal() +
+    theme(panel.grid = element_blank()) +
+    theme(axis.text.x = element_text(angle = 20, hjust = 0.6),
+          legend.position = "",
+          axis.text.y = element_blank()) +
+    labs(title = paste("Proportions"),
+         x = "",
+         y = "",
+         fill = "Target")
+  
+  # Second plot: Dodged bar chart with counts on the y-axis for each numeric column
+  train2_summary2 <- train2 %>%
+    group_by(grade_bin, target) %>%
+    summarise(count = n(), .groups = 'drop')
+  
+  plot2 <- ggplot(train2_summary2, aes(x = grade_bin, y = count, fill = target)) +
+    geom_bar(stat = "identity", position = "dodge", color = "black", width = 0.8) +
+    geom_text(aes(label = scales::comma(count)), 
+              position = position_dodge(width = 0.8), vjust = -0.5, color = "black", size = 3) +
+    scale_y_continuous(labels = scales::comma) +
+    scale_fill_brewer(palette = "Set2") +
+    theme_minimal() +
+    theme(panel.grid = element_blank()) +
+    theme(axis.text.x = element_text(angle = 20, hjust = 0.6),
+          axis.text.y = element_blank()) +
+    labs(title = paste("Counts"),
+         x = "",
+         y = "",
+         fill = "Target")
+  
+  # Title above both plots for each column
+  title <- ggdraw() +
+    draw_label(paste(col), fontface = 'bold', size = 18, hjust = 0.5)
+  
+  # Arrange both plots side by side with the title above
+  plot3 <- plot_grid(plot1, plot2, nrow = 1)
+  
+  # Add to the plot list
+  plot_list[[col]] <- plot_grid(title, plot3, nrow = 2, rel_heights = c(0.1, 1))
+}
+
+# Stack all plots vertically
+final_plot <- plot_grid(plotlist = plot_list, ncol = 1)
+
+# Display all the plots stacked vertically
+final_plot
+```
+
+```{r fig.width=12, fig.height=12}
+# Subset numeric columns only
+numeric_columns <- sapply(train, function(x) is.numeric(x) | is.integer(x))
+
+# Create correlation matrix between numeric columns and target
+cor_matrix <- cor(train[, numeric_columns], use = "complete.obs")
+
+# Reshape the correlation matrix into a tidy format for ggplot
+cor_matrix_melted <- melt(cor_matrix)
+
+# Create heatmap using ggplot2
+ggplot(cor_matrix_melted, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value, 2)), color = "white", size = 2) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Correlation Matrix", x = "Variables", y = "Variables", fill = "Correlation") +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1, size = 10),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(size = 16, hjust = 0.5))
+```
+
+
+# 3. Feature Engineering and Selection
+
+Duplicates
+
+```{r}
+# Count the number of duplicate rows in train
+num_duplicates_train <- sum(duplicated(train))
+
+# Count the number of duplicate rows in test
+num_duplicates_test <- sum(duplicated(test))
+
+# Print results
+cat("Number of duplicate rows in train dataset:", num_duplicates_train, "\n")
+cat("Number of duplicate rows in test dataset:", num_duplicates_test, "\n")
+```
+
+Missing Data
+
+```{r}
+# Count missing values in each column for train dataset
+missing_train <- colSums(is.na(train))
+
+# Count missing values in each column for test dataset
+missing_test <- colSums(is.na(test))
+
+# Display columns with missing values
+cat("Missing values in train dataset:\n")
+print(missing_train[missing_train > 0])
+
+cat("\nMissing values in test dataset:\n")
+print(missing_test[missing_test > 0])
+```
+
+Fix Data Types
+
+```{r}
+# Set binary to a logical
+train <- 
+  train %>%
+  mutate(across(where(~all(. %in% c(0, 1))), as.logical))
+
+test <- 
+  test %>%
+  mutate(across(where(~all(. %in% c(0, 1))), as.logical))
+```
+
+
+Handle Imbalanced Variables
+- We will remove all variables with 95%+ of the rows in 1 category
+- I am selecting specific ones even though there are more because other vatriables with 95% in one category also have strong power towards the target
+
+```{r}
+train <- train %>% select(-nacionality, -educational_special_needs, -international)
+test <- test %>% select(-nacionality, -educational_special_needs, -international)
+```
+
+```{r}
+# # Define threshold
+# imbalance_threshold <- 0.95
+# 
+# # Identify imbalanced columns based on top value frequency
+# imbalanced_columns <- names(train)[sapply(train, function(col) {
+#   # Get the frequency of the most common value
+#   top_value_percentage <- max(prop.table(table(col)))
+#   top_value_percentage >= imbalance_threshold
+# })]
+# 
+# # Remove these columns from train and test datasets
+# train <- train %>% select(-all_of(imbalanced_columns))
+# test <- test %>% select(-all_of(imbalanced_columns))
+# 
+# # Print excluded columns
+# cat("Removed columns due to high imbalance:","\n", paste(imbalanced_columns, collapse = "\n"), "\n")
+```
+
+
+Scale Numerical Variables
+
+- We will scale the numerical variables based on minmax scaling
+
+```{r}
+# Do the same for test set, using train's min and max to scale
+test <- 
+  test %>%
+  mutate(across(
+    .cols = setdiff(names(test), "id"),
+    .fns = ~ (.-min(train[[cur_column()]])) / ((max(train[[cur_column()]])) - min(train[[cur_column()]])))
+  )
+
+# Apply min-max scaling to all numeric columns
+train <- 
+  train %>%
+  mutate(across(where(is.numeric), ~ (.-min(.) ) / (max(.) - min(.))))
+
+```
+
+Label Encode Target Variable
+
+```{r}
+# Convert target to a factor (if not already)
+train$target <- as.factor(train$target)
+
+# Label encode: Convert factor levels to numeric (0, 1, 2, ...)
+train$target <- as.numeric(train$target) - 1
+```
+
+
+Split Dataset
+
+```{r}
+library(rsample)
+
+# Separate features (X) and target (Y)
+X <- train %>% select(-target)  # Exclude the target column for X
+Y <- train$target  # The target column for Y
+
+# Split the data into train and test sets
+train_index <- sample(seq_len(nrow(train)), size = 0.8 * nrow(train))
+
+# Split into X_train, Y_train, X_test, Y_test
+X_train <- X[train_index, ]
+Y_train <- Y[train_index]
+X_test <- X[-train_index, ]
+Y_test <- Y[-train_index]
+
+```
+
+
+# 4. Modeling
+
+Models used for this will be:
+1. Logistic Regression
+2. XGBoost
+3. RandomForest
+
+```{r}
+library(nnet)
+library(caret)
+
+# Create the multinomial logistic regression model using training data
+logistic_model <- multinom(Y_train ~ ., data = X_train, trace = FALSE)
+
+# Predict on the test set
+predictions <- predict(logistic_model, newdata = X_test, type = "class")
+predictions <- ifelse(predictions == 0, "Dropout",
+                      ifelse(predictions == 1, "Enrolled",
+                             ifelse(predictions == 2, "Graduate", NA)))
+Y_test2 <- ifelse(Y_test == 0, "Dropout",
+                 ifelse(Y_test == 1, "Enrolled",
+                        ifelse(Y_test == 2, "Graduate", NA)))
+
+# Calculate accuracy
+accuracy <- sum(predictions == Y_test2) / length(Y_test2)
+
+# Evaluate model performance (e.g., confusion matrix)
+confusion_matrix <- table(Predicted = predictions, Actual = Y_test2)
+confusion_matrix <- prop.table(confusion_matrix)
+
+# Convert table to a data frame
+cm_df <- as.data.frame(confusion_matrix)
+
+# Plot heatmap
+ggplot(cm_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = scales::percent(Freq, accuracy = 0.1)), color = "white", size = 6) +
+  scale_fill_gradient(low = "lightblue", high = "red") +
+  labs(title = paste("Confusion Matrix, Accuracy:", round(accuracy, 3)), x = "Predicted", y = "Actual") +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+
+```{r}
+library(xgboost)
+library(caret)
+
+# Convert target variables (Y_train and Y_test) to numeric (if not already)
+Y_train_numeric <- as.numeric(factor(Y_train)) - 1  # XGBoost uses 0-based indexing for classes
+Y_test_numeric <- as.numeric(factor(Y_test)) - 1
+
+# Convert the feature sets (X_train and X_test) to DMatrix format (XGBoost's preferred format)
+dtrain <- xgb.DMatrix(data = as.matrix(X_train), label = Y_train_numeric)
+dtest <- xgb.DMatrix(data = as.matrix(X_test), label = Y_test_numeric)
+
+# Set hyperparameters for multi-class classification
+params <- list(
+  objective = "multi:softmax",  # Multi-class classification
+  num_class = length(unique(Y_train)),  # Number of classes
+  eval_metric = "merror"  # Error rate (optional)
+)
+
+# Train the XGBoost model
+xgboost_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,  # Number of boosting rounds
+  verbose = 0  # Suppress iteration output
+)
+
+# Predict on the test set
+predictions <- predict(xgboost_model, dtest)
+predictions <- ifelse(predictions == 0, "Dropout",
+                      ifelse(predictions == 1, "Enrolled",
+                             ifelse(predictions == 2, "Graduate", NA)))
+Y_test2 <- ifelse(Y_test == 0, "Dropout",
+                 ifelse(Y_test == 1, "Enrolled",
+                        ifelse(Y_test == 2, "Graduate", NA)))
+
+# Calculate accuracy
+accuracy <- sum(predictions == Y_test2) / length(Y_test2)
+
+# Evaluate model performance (e.g., confusion matrix)
+confusion_matrix <- table(Predicted = predictions, Actual = Y_test2)
+confusion_matrix <- prop.table(confusion_matrix)
+
+# Convert table to a data frame
+cm_df <- as.data.frame(confusion_matrix)
+
+# Plot heatmap
+ggplot(cm_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = scales::percent(Freq, accuracy = 0.1)), color = "white", size = 6) +
+  scale_fill_gradient(low = "lightblue", high = "red") +
+  labs(title = paste("Confusion Matrix, Accuracy:", round(accuracy, 3)), x = "Predicted", y = "Actual") +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+
+```{r fig.width=8, fig.height=5}
+# Get feature importance
+feature_importance <- xgb.importance(model = xgboost_model)
+
+# Visualize feature importance
+xgb.plot.importance(feature_importance %>% head(12), 
+                    rel_to_first = TRUE,  # Normalize importance to the first feature
+                    xlab = "Relative Importance", 
+                    ylab = "", 
+                    main = "Feature Importance for XGBoost Model (Top 12)")
+```
+
+
+
+
+```{r}
+library(randomForest)
+
+# Convert target variables (Y_train and Y_test) to factor (if not already)
+Y_train_factor <- factor(Y_train)
+Y_test_factor <- factor(Y_test)
+
+# Train the Random Forest model
+rf_model <- randomForest(x = X_train, y = Y_train_factor, ntree = 100, importance = TRUE)
+
+# Predict on the test set
+predictions <- predict(rf_model, newdata = X_test)
+
+# Evaluate model performance (e.g., confusion matrix)
+confusion_matrix <- table(Predicted = predictions, Actual = Y_test_factor)
+predictions <- ifelse(predictions == 0, "Dropout",
+                      ifelse(predictions == 1, "Enrolled",
+                             ifelse(predictions == 2, "Graduate", NA)))
+Y_test2 <- ifelse(Y_test == 0, "Dropout",
+                 ifelse(Y_test == 1, "Enrolled",
+                        ifelse(Y_test == 2, "Graduate", NA)))
+
+# Calculate accuracy
+accuracy <- sum(predictions == Y_test2) / length(Y_test2)
+
+# Evaluate model performance (e.g., confusion matrix)
+confusion_matrix <- table(Predicted = predictions, Actual = Y_test2)
+confusion_matrix <- prop.table(confusion_matrix)
+
+# Convert table to a data frame
+cm_df <- as.data.frame(confusion_matrix)
+
+# Plot heatmap
+ggplot(cm_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = scales::percent(Freq, accuracy = 0.1)), color = "white", size = 6) +
+  scale_fill_gradient(low = "lightblue", high = "red") +
+  labs(title = paste("Confusion Matrix, Accuracy:", round(accuracy, 3)), x = "Predicted", y = "Actual") +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+```{r fig.width=8, fig.height=5}
+feature_importance <- importance(rf_model)
+
+# Convert the importance to a data frame for ggplot
+importance_df <- as.data.frame(feature_importance) %>% arrange(-MeanDecreaseGini) %>% head(12)
+importance_df$Feature <- rownames(importance_df)
+
+# Plot feature importance
+ggplot(importance_df, aes(x = reorder(Feature, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  # Flip coordinates for better readability
+  labs(title = "Random Forest - Feature Importance (Top 12)", x = "Features", y = "Mean Decrease in Gini") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12), 
+        axis.title = element_text(size = 14), 
+        plot.title = element_text(size = 16, hjust = 0.5))
+```
+
+
+
+# 5. Submission
+
+```{r}
+X2 <- test %>% select(-"id")
+X2 <- xgb.DMatrix(data = as.matrix(X2))
+predictions <- predict(xgboost_model, X2)
+
+submission <- 
+  cbind(id = test$id, Target = predictions) %>% 
+  as.data.frame() %>%
+  mutate(
+    Target = ifelse(Target == 0, "Dropout",
+                    ifelse(Target == 1, "Enrolled",
+                           ifelse(Target == 2, "Graduate", NA)))
+  )
+
+write.csv(submission, "submission.csv", row.names = FALSE)
+submission %>% head(5)
+```
+
+
+
